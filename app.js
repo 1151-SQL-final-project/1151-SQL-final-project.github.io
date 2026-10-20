@@ -1,4 +1,4 @@
-// 事集：單頁式網頁。網址 # 後面決定顯示哪一頁：
+// 探點：單頁式網頁。網址 # 後面決定顯示哪一頁：
 //   #/ 首頁　#/search 找活動　#/event/12 活動詳情　#/saves 我的收藏　#/stats 數據　#/login 登入／註冊
 //   #/merchant 商家後台　#/merchant/new 上架活動　#/merchant/edit/12 修改活動　#/admin 管理員後台
 // 三種角色：使用者（查詢、收藏）、商家（上架、修改自己的活動）、管理員（審核、下架、統計）。
@@ -133,8 +133,8 @@ async function router() {
 function viewHome() {
   app.innerHTML = `
     <section class="home-hero">
-      <div class="home-art"><img src="logo.png" alt="事集 logo"></div>
-      <h1 class="home-name">事集</h1>
+      <div class="home-art"><img src="logo.png" alt="探點 logo"></div>
+      <h1 class="home-name">探點</h1>
       <p class="eyebrow">TAIWAN EVENTS</p>
       <p class="lead">把全臺灣的展覽、講座、工作坊與表演集中在一起。<br>
         依地區、日期、類型與優惠查詢活動，<br>學生優惠、早鳥票直接標出來，看到喜歡的就收藏起來。</p>
