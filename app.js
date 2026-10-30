@@ -209,8 +209,10 @@ async function viewSearch() {
         <button class="btn btn-primary">搜尋活動</button>
       </div>
     </form>
-    <section class="strip" id="sale-soon" hidden></section>
-    <section class="strip" id="early-bird" hidden></section>
+    <div id="highlights">
+      <section class="strip" id="sale-soon" hidden></section>
+      <section class="strip" id="early-bird" hidden></section>
+    </div>
     <div class="results-head">
       <h2 id="result-count" aria-live="polite">　</h2>
       <label class="field"><span class="sr-only">排序</span>
@@ -218,7 +220,8 @@ async function viewSearch() {
       </label>
     </div>
     <div class="grid" id="results"></div>
-    <div class="more"><button class="btn" id="more" hidden>載入更多</button></div>`;
+    <div class="more"><button class="btn" id="more" hidden>載入更多</button></div>
+    <div id="highlights-below"></div>`;
 
   const form = document.getElementById("filters");
   // 預設縣市：登入時用使用者設定的預設縣市
@@ -240,7 +243,7 @@ async function viewSearch() {
   document.getElementById("sort").value = initial.get("sort") || "date";
 
   form.addEventListener("submit", (e) => { e.preventDefault(); runSearch(form); });
-  form.addEventListener("reset", () => setTimeout(() => { checkAll(); runSearch(form); }));
+  form.addEventListener("reset", () => setTimeout(() => { checkAll(); runSearch(form, false); }));
   form.querySelectorAll('[name="region"], [name="discount_type_id"], [name="free_only"], [name="not_on_sale"], select').forEach((el) =>
     el.addEventListener("change", () => runSearch(form)));
   document.getElementById("sort").addEventListener("change", () => runSearch(form));
@@ -255,11 +258,22 @@ async function viewSearch() {
   loadSaleSoon();
   loadEarlyBird();
   if (search.params && search.items.length) {
+    placeHighlights();
     renderResults();
     requestAnimationFrame(() => window.scrollTo(0, search.scrollY));
   } else {
-    runSearch(form);
+    runSearch(form, false);
   }
+}
+
+// 「即將開賣」「早鳥即將截止」：還沒搜尋時放在搜尋結果上面；使用者搜尋之後移到結果下面，先看到結果
+function placeHighlights() {
+  const box = document.getElementById("highlights");
+  const target = search.userSearched ? document.getElementById("highlights-below") : document.getElementById("results").parentNode;
+  if (!box) return;
+  if (search.userSearched) target.append(box);
+  else target.insertBefore(box, document.querySelector(".results-head"));
+  box.classList.toggle("below", !!search.userSearched);
 }
 
 // 找活動的類型下拉選單：每組最上面是「整組」（例如全部學習類），下面是該組的各類別
@@ -288,7 +302,10 @@ function quickRange(kind) {
   return today.getDay() === 0 ? [today, today] : [saturday, add(saturday, 1)];
 }
 
-function runSearch(form) {
+// byUser：使用者按搜尋或改條件（false = 剛打開頁面、清除條件）
+function runSearch(form, byUser = true) {
+  search.userSearched = byUser;
+  placeHighlights();
   const params = new URLSearchParams();
   for (const [key, value] of new FormData(form)) {
     if (!value) continue;
@@ -348,36 +365,45 @@ function eventCard(e) {
   </a>`;
 }
 
+// 小區塊（即將開賣、早鳥即將截止）：先顯示前 4 筆，其他的按「顯示更多」才出現
+const STRIP_FIRST = 4;
+function renderStrip(id, title, note, list, item) {
+  const box = document.getElementById(id);
+  if (!box || !list.length) return;
+  const rest = list.length - STRIP_FIRST;
+  box.innerHTML = `
+    <div class="strip-head"><h2>${title}</h2><span class="muted small">${note}</span></div>
+    <div class="strip-list">${list.map((x, i) => item(x).replace("<a ", `<a ${i >= STRIP_FIRST ? "hidden " : ""}`)).join("")}</div>
+    ${rest > 0 ? `<button type="button" class="btn-text strip-more" aria-expanded="false">顯示更多（還有 ${rest} 場）</button>` : ""}`;
+  box.querySelector(".strip-more")?.addEventListener("click", (ev) => {
+    const open = ev.target.getAttribute("aria-expanded") !== "true";
+    box.querySelectorAll(".strip-item").forEach((a, i) => (a.hidden = !open && i >= STRIP_FIRST));
+    ev.target.setAttribute("aria-expanded", open);
+    ev.target.textContent = open ? "收合" : `顯示更多（還有 ${rest} 場）`;
+  });
+  box.hidden = false;
+}
+
 // 即將開賣：熱門演唱會一開賣就賣完，提早告訴使用者開賣時間
 async function loadSaleSoon() {
   const list = await api("/api/sales/upcoming?days=14").catch(() => []);
-  const box = document.getElementById("sale-soon");
-  if (!box || !list.length) return;
-  box.innerHTML = `
-    <div class="strip-head"><h2>🎫 即將開賣</h2><span class="muted small">14 天內開賣，熱門場次常常一開賣就賣完</span></div>
-    <div class="strip-list">${list.map((e) => `
+  renderStrip("sale-soon", "🎫 即將開賣", `14 天內開賣・共 ${list.length} 場`, list, (e) => `
       <a class="card strip-item" href="#/event/${e.EventID}">
         <span class="tag tag-sale">${e.DaysLeft === 0 ? "今天" : `${e.DaysLeft} 天後`} ${esc(fmtTime(e.EventSaleStartDate).split(" ")[1])} 開賣</span>
-        <b>${esc(e.EventTitle)}</b>
+        <b class="strip-title">${esc(e.EventTitle)}</b>
         <span class="muted small">${fmtRange(e.EventStartDate, e.EventEndDate)}・${esc(e.CityName)}</span>
-      </a>`).join("")}</div>`;
-  box.hidden = false;
+      </a>`);
 }
 
 async function loadEarlyBird() {
   const list = await api("/api/discounts/early-bird?days=14").catch(() => []);
-  const box = document.getElementById("early-bird");
-  if (!box || !list.length) return;
-  box.innerHTML = `
-    <div class="strip-head"><h2>⏰ 早鳥即將截止</h2><span class="muted small">14 天內截止</span></div>
-    <div class="strip-list">${list.map((d) => `
+  renderStrip("early-bird", "⏰ 早鳥即將截止", `14 天內截止・共 ${list.length} 場`, list, (d) => `
       <a class="card strip-item" href="#/event/${d.EventID}">
         <span class="tag tag-warn">${d.DaysLeft === 0 ? "今天截止" : `剩 ${d.DaysLeft} 天`}</span>
-        <b>${esc(d.EventTitle)}</b>
+        <b class="strip-title">${esc(d.EventTitle)}</b>
         <span><span class="price">${money(d.DiscountPrice)}</span>
           ${d.EventOriginalPrice ? `<span class="price-old">${money(d.EventOriginalPrice)}</span>` : ""}</span>
-      </a>`).join("")}</div>`;
-  box.hidden = false;
+      </a>`);
 }
 
 // ---------- 活動詳情 ----------
