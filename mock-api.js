@@ -12,11 +12,17 @@
   const CATEGORY_GROUPS = ["學習類", "休閒類"];
   const EARLY_BIRD = 2; // DiscountTypeTable 的早鳥優惠固定是 2 號（db/schema.py）
   const DEMO_PASSWORD = "test1234";
+  // 和 api/main.py 的 REJECT_REASONS 相同
+  const REJECT_REASONS = [
+    "活動資訊不完整（缺少時間、地點或主辦單位）", "活動日期或時間有誤", "票價或優惠資訊有誤", "場館或地址有誤",
+    "開賣時間有誤", "活動網址無法開啟或不是官方網址", "內容不適當或違反上架規範", "重複上架",
+  ];
 
   // ---------- 資料：匯出的資料庫＋這個瀏覽器裡的修改 ----------
 
   const clone = (v) => JSON.parse(JSON.stringify(v));
   const db = clone(BASE);
+  shiftTestEvents();
   // 只存有改過的部分，避免把整個資料庫塞進 localStorage
   let changes = { events: {}, discounts: {}, users: [], venues: [], saves: null };
   try {
@@ -35,6 +41,23 @@
   db.VenueTable.push(...changes.venues);
   if (changes.saves) db.SaveTable = changes.saves;
 
+  // 「（測試）」活動的日期是建資料庫那天往前後推算的（db/build_test_db.py）。示範版可能晚幾天才打開，
+  // 所以把這些活動和它們的優惠整體往後推同樣的天數，即將開賣、早鳥即將截止的範例才會一直都在
+  function shiftTestEvents() {
+    const days = Math.round((Date.parse(today()) - Date.parse(window.DEMO_EXPORTED || today())) / 86400000);
+    if (!days) return;
+    const shift = (iso) => (iso ? `${addDays(iso.slice(0, 10), days)}${iso.slice(10)}` : iso);
+    const ids = new Set();
+    for (const e of db.EventTable.filter((x) => x.EventDataSource === "測試資料")) {
+      ids.add(e.EventID);
+      for (const k of ["EventStartDate", "EventEndDate", "EventSaleStartDate"]) e[k] = shift(e[k]);
+    }
+    for (const d of db.DiscountTable.filter((x) => ids.has(x.DiscountEvent_FK))) {
+      d.DiscountStartDate = shift(d.DiscountStartDate);
+      d.DiscountEndDate = shift(d.DiscountEndDate);
+    }
+  }
+
   function persist() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(changes)); } catch { /* 存不了就只在這次瀏覽有效 */ }
   }
@@ -50,15 +73,16 @@
 
   // ---------- 日期（Access 的 Date() 是今天 0 點，資料庫裡的日期都是 yyyy-mm-ddT00:00:00） ----------
 
-  const pad = (n) => String(n).padStart(2, "0");
-  const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const today = () => dayOf(new Date());
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function dayOf(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+  function today() { return dayOf(new Date()); }
   const day = (iso) => (iso ? iso.slice(0, 10) : null);
   const dayStart = (ymd) => (ymd ? `${ymd}T00:00:00` : null);
   const nowIso = () => { const d = new Date(); return `${dayOf(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
   const dateDiff = (from, to) => Math.round((Date.parse(to) - Date.parse(from)) / 86400000);
-  const addDays = (ymd, n) => { const d = new Date(`${ymd}T00:00:00`); d.setDate(d.getDate() + n); return dayOf(d); };
+  function addDays(ymd, n) { const d = new Date(`${ymd}T00:00:00`); d.setDate(d.getDate() + n); return dayOf(d); }
   const notEnded = (e) => day(e.EventEndDate) >= today();
+  const notOnSale = (e) => !!e.EventSaleStartDate && e.EventSaleStartDate > nowIso();
   const validNow = (d) => (!d.DiscountStartDate || day(d.DiscountStartDate) <= today()) && (!d.DiscountEndDate || day(d.DiscountEndDate) >= today());
 
   // ---------- 查詢（對應 sql/ 的檔案） ----------
@@ -91,6 +115,7 @@
     const region = q.get("region"), cityId = num(q.get("city_id")), from = q.get("date_from"), to = q.get("date_to");
     const categoryId = num(q.get("category_id")), group = q.get("category_group"), keyword = q.get("keyword");
     const discountTypes = q.getAll("discount_type_id").map(Number), freeOnly = q.get("free_only") === "true";
+    const onlyNotOnSale = q.get("not_on_sale") === "true";
     const sort = q.get("sort") || "date";
     if (region && !REGIONS.includes(region)) throw httpError(400, "地區只能是 北部、中部、南部、東部、離島");
     if (group && !CATEGORY_GROUPS.includes(group)) throw httpError(400, "類別分組只能是 學習類、休閒類");
@@ -105,23 +130,25 @@
       && (!group || c.CategoryGroup === group)
       && (!discountTypes.length || (discountsOf.get(e.EventID) ?? []).some((d) => discountTypes.includes(d.DiscountType_FK) && validNow(d)))
       && (!keyword || e.EventTitle.includes(keyword) || v.VenueName.includes(keyword))
-      && (!freeOnly || e.EventOriginalPrice === 0));
+      && (!freeOnly || e.EventOriginalPrice === 0)
+      && (!onlyNotOnSale || notOnSale(e)));
 
     const t = today();
     const key = {
       date: ({ e }) => [day(e.EventStartDate) < t ? t : day(e.EventStartDate), e.EventEndDate, e.EventID],
       price: ({ e }) => [e.EventOriginalPrice === null ? 1 : 0, e.EventOriginalPrice ?? 0, e.EventStartDate, e.EventID],
       ending: ({ e }) => [e.EventEndDate, e.EventID],
+      sale: ({ e }) => [notOnSale(e) ? 0 : 1, e.EventSaleStartDate ?? "", e.EventStartDate, e.EventID],
     }[sort];
-    if (!key) throw httpError(400, "排序只能是 date、price、ending");
+    if (!key) throw httpError(400, "排序只能是 date、price、ending、sale");
     rows.sort((a, b) => compare(key(a), key(b)));
 
     const items = rows.map(({ e, c, v, ci }) => {
       const valid = (discountsOf.get(e.EventID) ?? []).filter(validNow).map((d) => d.DiscountPrice);
       return { EventID: e.EventID, EventTitle: e.EventTitle, CategoryName: c.CategoryName, CategoryGroup: c.CategoryGroup,
                EventStartDate: e.EventStartDate, EventEndDate: e.EventEndDate, EventOriginalPrice: e.EventOriginalPrice,
-               VenueName: v.VenueName, CityName: ci.CityName, CityRegion: ci.CityRegion,
-               BestDiscountPrice: valid.length ? Math.min(...valid) : null };
+               EventSaleStartDate: e.EventSaleStartDate ?? null, VenueName: v.VenueName, CityName: ci.CityName,
+               CityRegion: ci.CityRegion, BestDiscountPrice: valid.length ? Math.min(...valid) : null };
     });
     const page = Math.max(1, num(q.get("page")) ?? 1), size = Math.min(100, num(q.get("page_size")) ?? 20);
     return { total: items.length, page, page_size: size, items: items.slice((page - 1) * size, page * size) };
@@ -138,7 +165,8 @@
       EventID: e.EventID, EventTitle: e.EventTitle, EventCategory_FK: e.EventCategory_FK, CategoryName: c.CategoryName,
       CategoryGroup: c.CategoryGroup, EventStartDate: e.EventStartDate, EventEndDate: e.EventEndDate,
       EventOriginalPrice: e.EventOriginalPrice, EventURL: e.EventURL, EventDataSource: e.EventDataSource,
-      EventStatus: e.EventStatus, EventDescription: e.EventDescription, EventOrganizer_FK: e.EventOrganizer_FK,
+      EventStatus: e.EventStatus, EventRejectReason: e.EventRejectReason ?? null, EventSaleStartDate: e.EventSaleStartDate ?? null,
+      IsOnSale: !notOnSale(e), EventDescription: e.EventDescription, EventOrganizer_FK: e.EventOrganizer_FK,
       OrganizerName: users().get(e.EventOrganizer_FK)?.UserName, EventVenue_FK: e.EventVenue_FK,
       VenueName: v.VenueName, VenueAddress: v.VenueAddress, CityName: ci.CityName, CityRegion: ci.CityRegion,
       GoogleMapsURL: maps(v.VenueName), GoogleMapsAddressURL: maps(v.VenueAddress), IsEnded: !notEnded(e),
@@ -197,14 +225,29 @@
       });
   }
 
+  // sale_starting_soon.sql 與 save_sale_reminders.sql：N 天內開賣（還沒開賣的才算）
+  function saleSoon(days, eventIds = null) {
+    const now = nowIso(), last = `${addDays(today(), days)}${now.slice(10)}`;
+    return db.EventTable.filter((e) => e.EventStatus === LISTED && (eventIds ? eventIds.has(e.EventID) : notEnded(e))
+        && e.EventSaleStartDate && e.EventSaleStartDate >= now && e.EventSaleStartDate <= last)
+      .sort((a, b) => compare([a.EventSaleStartDate, a.EventID], [b.EventSaleStartDate, b.EventID]))
+      .map((ev) => {
+        const { e, c, v, ci } = joined(ev);
+        return { EventID: e.EventID, EventTitle: e.EventTitle, CategoryName: c.CategoryName, EventStartDate: e.EventStartDate,
+                 EventEndDate: e.EventEndDate, EventOriginalPrice: e.EventOriginalPrice, EventSaleStartDate: e.EventSaleStartDate,
+                 VenueName: v.VenueName, CityName: ci.CityName,
+                 DaysLeft: dateDiff(dayStart(today()), dayStart(day(e.EventSaleStartDate))) };
+      });
+  }
+
   // list_saves.sql
   function listSaves(userId) {
     return db.SaveTable.filter((s) => s.SaveUser_FK === userId).sort((a, b) => compare([b.SaveDate], [a.SaveDate])).map((s) => {
       const ev = db.EventTable.find((x) => x.EventID === s.SaveEvent_FK);
       const { e, c, v, ci } = joined(ev);
       return { EventID: e.EventID, EventTitle: e.EventTitle, CategoryName: c.CategoryName, EventStartDate: e.EventStartDate,
-               EventEndDate: e.EventEndDate, EventOriginalPrice: e.EventOriginalPrice, EventStatus: e.EventStatus,
-               VenueName: v.VenueName, CityName: ci.CityName, SaveDate: s.SaveDate };
+               EventEndDate: e.EventEndDate, EventOriginalPrice: e.EventOriginalPrice, EventSaleStartDate: e.EventSaleStartDate ?? null,
+               EventStatus: e.EventStatus, VenueName: v.VenueName, CityName: ci.CityName, SaveDate: s.SaveDate };
     });
   }
 
@@ -217,6 +260,7 @@
     const { e, c, v, ci } = joined(ev), u = users().get(e.EventOrganizer_FK);
     return { EventID: e.EventID, EventTitle: e.EventTitle, CategoryName: c.CategoryName, EventStartDate: e.EventStartDate,
              EventEndDate: e.EventEndDate, EventOriginalPrice: e.EventOriginalPrice, EventStatus: e.EventStatus,
+             EventRejectReason: e.EventRejectReason ?? null, EventSaleStartDate: e.EventSaleStartDate ?? null,
              EventDataSource: e.EventDataSource, VenueName: v.VenueName, CityName: ci.CityName, CityRegion: ci.CityRegion,
              EventOrganizer_FK: e.EventOrganizer_FK, OrganizerName: u?.UserName, OrganizerRole: u?.UserRole,
              DiscountCount: db.DiscountTable.filter((d) => d.DiscountEvent_FK === e.EventID).length,
@@ -234,6 +278,7 @@
     if (!b.start_date || !b.end_date) throw httpError(422, "請填寫活動開始與結束日期");
     if (b.end_date < b.start_date) throw httpError(400, "活動結束日期不能早於開始日期");
     if (b.end_date < today()) throw httpError(400, "結束日期已經過了；活動結束後會自動下架，不需要再上架");
+    if (b.sale_start && b.sale_start.slice(0, 10) > b.end_date) throw httpError(400, "開賣時間不能晚於活動結束日期");
     if (b.url && !/^https?:\/\//.test(b.url)) throw httpError(400, "活動網址要以 http:// 或 https:// 開頭");
     if (b.price !== null && b.price < 0) throw httpError(400, "票價不能是負數（免費請填 0，未公布請留空）");
     for (const d of b.discounts ?? []) {
@@ -258,7 +303,9 @@
     }
     Object.assign(e, { EventCategory_FK: b.category_id, EventVenue_FK: b.venue_id, EventTitle: b.title.trim(),
                        EventStartDate: dayStart(b.start_date), EventEndDate: dayStart(b.end_date), EventOriginalPrice: b.price,
-                       EventURL: b.url?.trim() || null, EventDescription: b.description?.trim() || null, EventStatus: PENDING });
+                       EventURL: b.url?.trim() || null, EventDescription: b.description?.trim() || null,
+                       EventSaleStartDate: b.sale_start ? `${b.sale_start.slice(0, 16)}:00` : null,
+                       EventStatus: PENDING, EventRejectReason: null });
     // 優惠整批換成新的（merchant/delete_event_discounts.sql ＋ insert_discount.sql）
     db.DiscountTable = db.DiscountTable.filter((d) => d.DiscountEvent_FK !== e.EventID);
     let discountId = Math.max(nextId(db.DiscountTable, "DiscountID"), 100000);
@@ -280,7 +327,7 @@
   const routes = [
     ["GET", /^\/api\/health$/, () => ({ database: "events.accdb（線上示範版）", sample_event: db.EventTable[0] && { EventID: db.EventTable[0].EventID, EventTitle: db.EventTable[0].EventTitle } })],
     ["GET", /^\/api\/options$/, () => ({
-      regions: REGIONS, category_groups: CATEGORY_GROUPS, statuses: STATUSES,
+      regions: REGIONS, category_groups: CATEGORY_GROUPS, statuses: STATUSES, reject_reasons: REJECT_REASONS,
       cities: db.CityTable, categories: db.CategoryTable, discount_types: db.DiscountTypeTable })],
     ["GET", /^\/api\/events$/, ({ q }) => searchEvents(q)],
     ["GET", /^\/api\/events\/(\d+)$/, ({ id, user }) => {
@@ -291,6 +338,7 @@
     }],
     ["GET", /^\/api\/stats$/, () => ({ regions: statsRegions(), cities: statsCities(), categories: statsCategories(), popular: popularSaves() })],
     ["GET", /^\/api\/discounts\/early-bird$/, ({ q }) => endingSoon(num(q.get("days")) ?? 14, true)],
+    ["GET", /^\/api\/sales\/upcoming$/, ({ q }) => saleSoon(num(q.get("days")) ?? 14)],
     ["POST", /^\/api\/auth\/register$/, ({ body }) => {
       const email = String(body.email ?? "").trim().toLowerCase();
       if (![USER, MERCHANT].includes(body.role)) throw httpError(400, "身分只能選「使用者」或「商家」");
@@ -318,6 +366,11 @@
       const user = need(USER);
       const mine = new Set(db.SaveTable.filter((s) => s.SaveUser_FK === user.UserID).map((s) => s.SaveEvent_FK));
       return endingSoon(num(q.get("days")) ?? 7, false, mine);
+    }],
+    ["GET", /^\/api\/saves\/sale-reminders$/, ({ need, q }) => {
+      const user = need(USER);
+      const mine = new Set(db.SaveTable.filter((s) => s.SaveUser_FK === user.UserID).map((s) => s.SaveEvent_FK));
+      return saleSoon(num(q.get("days")) ?? 14, mine);
     }],
     ["POST", /^\/api\/saves\/(\d+)$/, ({ need, id }) => {
       const user = need(USER);
@@ -372,7 +425,10 @@
       const action = ALLOWED_CHANGES[`${e.EventStatus}>${body.status}`];
       if (!action) throw httpError(400, `「${e.EventStatus}」的活動不能改成「${body.status}」`);
       if (body.status === LISTED && !notEnded(e)) throw httpError(400, "這場活動已經結束，不能上架");
+      const reason = String(body.reason ?? "").trim().slice(0, 255) || null;
+      if (body.status === REJECTED && !reason) throw httpError(400, "請選擇退回理由");
       e.EventStatus = body.status;
+      e.EventRejectReason = body.status === REJECTED ? reason : null;
       touchEvent(e);
       return { event_id: id, status: body.status, action };
     }],

@@ -257,3 +257,24 @@ textarea.input { resize: vertical; font: inherit; }
   animation: shimmer 1.2s infinite; border-radius: var(--radius); min-height: 150px; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } .event-card { transition: none; } }
+
+/* 開賣時間：主色（深藍）系，和優惠（赭紅）、提醒（黃）分開 */
+.tag-sale { background: var(--accent-soft); color: var(--accent-ink); }
+.sale-info { border-radius: 10px; padding: 10px 12px; background: var(--surface-2); color: var(--text-2); }
+.sale-info.upcoming { background: var(--accent-soft); color: var(--accent-ink); }
+.reminder-sale { background: var(--accent-soft); }
+.reminder-sale b { color: var(--accent-ink); }
+
+/* 退回理由 */
+.reject-note { margin-top: 6px; padding: 8px 12px; border-radius: 10px; background: var(--deal-soft); color: var(--deal); }
+
+/* 彈窗（管理員退回時選理由） */
+.dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 22px;
+  border: 1px solid var(--line); color: var(--text); }
+.dialog::backdrop { background: rgb(15 23 32 / .45); }
+.dialog h2 { margin: 0; }
+.reasons { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+.reason { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 10px; cursor: pointer; }
+.reason:has(input:checked) { border-color: var(--danger); background: var(--deal-soft); }
+.reason input { margin-top: 4px; accent-color: var(--danger); }

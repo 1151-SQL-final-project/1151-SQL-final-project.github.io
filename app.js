@@ -21,6 +21,14 @@ function fmtDay(iso, withYear = false) {
   const year = withYear || d.getFullYear() !== new Date().getFullYear() ? `${d.getFullYear()}/` : "";
   return `${year}${d.getMonth() + 1}/${d.getDate()}（${WEEKDAYS[d.getDay()]}）`;
 }
+// 開賣時間要到時、分：11/1（六）12:00
+function fmtTime(iso) {
+  const d = toDate(iso);
+  return d ? `${fmtDay(iso)} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "";
+}
+// 還沒開賣：有開賣時間而且還沒到
+const notOnSale = (iso) => !!iso && toDate(iso) > new Date();
+const saleTag = (iso) => (notOnSale(iso) ? `<span class="tag tag-sale">🎫 ${esc(fmtTime(iso))} 開賣</span>` : "");
 function fmtRange(start, end) {
   return ymd(toDate(start)) === ymd(toDate(end)) ? fmtDay(start) : `${fmtDay(start)} – ${fmtDay(end)}`;
 }
@@ -192,16 +200,21 @@ async function viewSearch() {
           ${chip("free_only", "true", "只看免費", "checkbox")}
         </div>
       </div>
+      <div>
+        <div class="chip-label">售票</div>
+        <div class="chips">${chip("not_on_sale", "true", "🎫 還沒開賣（可以先收藏，開賣前提醒你）", "checkbox")}</div>
+      </div>
       <div class="filter-actions">
         <button type="reset" class="btn-text">清除條件</button>
         <button class="btn btn-primary">搜尋活動</button>
       </div>
     </form>
+    <section class="strip" id="sale-soon" hidden></section>
     <section class="strip" id="early-bird" hidden></section>
     <div class="results-head">
       <h2 id="result-count" aria-live="polite">　</h2>
       <label class="field"><span class="sr-only">排序</span>
-        <select class="input" id="sort"><option value="date">依日期（進行中優先）</option><option value="ending">快結束的優先</option><option value="price">價格低到高</option></select>
+        <select class="input" id="sort"><option value="date">依日期（進行中優先）</option><option value="ending">快結束的優先</option><option value="price">價格低到高</option><option value="sale">即將開賣的優先</option></select>
       </label>
     </div>
     <div class="grid" id="results"></div>
@@ -228,7 +241,7 @@ async function viewSearch() {
 
   form.addEventListener("submit", (e) => { e.preventDefault(); runSearch(form); });
   form.addEventListener("reset", () => setTimeout(() => { checkAll(); runSearch(form); }));
-  form.querySelectorAll('[name="region"], [name="discount_type_id"], [name="free_only"], select').forEach((el) =>
+  form.querySelectorAll('[name="region"], [name="discount_type_id"], [name="free_only"], [name="not_on_sale"], select').forEach((el) =>
     el.addEventListener("change", () => runSearch(form)));
   document.getElementById("sort").addEventListener("change", () => runSearch(form));
   form.querySelectorAll("[data-quick]").forEach((b) => b.addEventListener("click", () => {
@@ -239,6 +252,7 @@ async function viewSearch() {
   }));
   document.getElementById("more").addEventListener("click", () => fetchPage(search.page + 1));
 
+  loadSaleSoon();
   loadEarlyBird();
   if (search.params && search.items.length) {
     renderResults();
@@ -321,7 +335,7 @@ function renderResults() {
 function eventCard(e) {
   const p = priceView(e.EventOriginalPrice, e.BestDiscountPrice);
   return `<a class="card event-card" href="#/event/${e.EventID}">
-    <div><span class="tag">${esc(e.CategoryName)}</span> ${p.tag ?? ""}</div>
+    <div><span class="tag">${esc(e.CategoryName)}</span> ${p.tag ?? ""} ${saleTag(e.EventSaleStartDate)}</div>
     <h3>${esc(e.EventTitle)}</h3>
     <div class="event-meta">
       <div>📅 ${fmtRange(e.EventStartDate, e.EventEndDate)}</div>
@@ -332,6 +346,22 @@ function eventCard(e) {
       ${p.old ? `<span class="price-old">${esc(p.old)}</span>` : ""}
     </div>
   </a>`;
+}
+
+// 即將開賣：熱門演唱會一開賣就賣完，提早告訴使用者開賣時間
+async function loadSaleSoon() {
+  const list = await api("/api/sales/upcoming?days=14").catch(() => []);
+  const box = document.getElementById("sale-soon");
+  if (!box || !list.length) return;
+  box.innerHTML = `
+    <div class="strip-head"><h2>🎫 即將開賣</h2><span class="muted small">14 天內開賣，熱門場次常常一開賣就賣完</span></div>
+    <div class="strip-list">${list.map((e) => `
+      <a class="card strip-item" href="#/event/${e.EventID}">
+        <span class="tag tag-sale">${e.DaysLeft === 0 ? "今天" : `${e.DaysLeft} 天後`} ${esc(fmtTime(e.EventSaleStartDate).split(" ")[1])} 開賣</span>
+        <b>${esc(e.EventTitle)}</b>
+        <span class="muted small">${fmtRange(e.EventStartDate, e.EventEndDate)}・${esc(e.CityName)}</span>
+      </a>`).join("")}</div>`;
+  box.hidden = false;
 }
 
 async function loadEarlyBird() {
@@ -396,6 +426,10 @@ async function viewEvent(id) {
           <div class="muted small">${best !== null && p.old ? "優惠價" : "票價"}</div>
           <div><span class="price-big ${p.muted ? "muted" : ""}">${esc(p.main)}</span>
             ${p.old ? `<span class="price-old">原價 ${esc(p.old)}</span>` : ""}</div>
+          ${e.EventSaleStartDate ? `<div class="sale-info ${notOnSale(e.EventSaleStartDate) ? "upcoming" : ""}">
+            ${notOnSale(e.EventSaleStartDate) ? `🎫 <b>${esc(fmtTime(e.EventSaleStartDate))} 開賣</b>
+              <div class="small">${saleCountdown(e.EventSaleStartDate)}${canSave ? "，收藏後會在「我的收藏」提醒你" : ""}</div>`
+              : `<span class="small">已開賣（${esc(fmtTime(e.EventSaleStartDate))} 起）</span>`}</div>` : ""}
           ${canSave && e.EventStatus === "上架中" ? `<button class="btn ${saved ? "btn-saved" : "btn-primary"}" id="save-btn">${saved ? "✓ 已收藏" : "☆ 收藏活動"}</button>` : ""}
           ${isOwner ? `<a class="btn btn-primary" href="#/merchant/edit/${e.EventID}">修改活動</a>` : ""}
           ${e.EventURL ? `<a class="btn" href="${esc(e.EventURL)}" target="_blank" rel="noopener">活動官網 ↗</a>` : ""}
@@ -421,6 +455,12 @@ async function viewEvent(id) {
   });
   document.getElementById("save-btn")?.addEventListener("click", () => toggleSave(e.EventID));
   window.scrollTo(0, 0);
+}
+
+function saleCountdown(iso) {
+  const ms = toDate(iso) - new Date();
+  const days = Math.floor(ms / 86400000), hours = Math.floor((ms % 86400000) / 3600000);
+  return days > 0 ? `還有 ${days} 天 ${hours} 小時` : hours > 0 ? `還有 ${hours} 小時` : "快開賣了";
 }
 
 async function toggleSave(eventId) {
@@ -461,11 +501,15 @@ async function viewSaves() {
       <p>${esc(me.UserRole)}帳號請到${me.UserRole === "商家" ? '<a href="#/merchant">商家後台</a>' : '<a href="#/admin">管理員後台</a>'}。</p></div>`;
     return;
   }
-  const [saves, reminders] = await Promise.all([api("/api/saves"), api("/api/saves/reminders?days=14")]);
+  const [saves, reminders, sales] = await Promise.all([
+    api("/api/saves"), api("/api/saves/reminders?days=14"), api("/api/saves/sale-reminders?days=14")]);
   if (routeNow() !== "#/saves") return;
   savedIds = new Set(saves.map((s) => s.EventID));
   app.innerHTML = `
     <h1>我的收藏</h1>
+    ${sales.length ? `<section style="margin-bottom: 10px">${sales.map((r) => `
+      <a class="reminder reminder-sale" href="#/event/${r.EventID}">🎫 <span><b>${r.DaysLeft === 0 ? "今天" : `${r.DaysLeft} 天後`}開賣</b>：
+        ${esc(r.EventTitle)}（${esc(fmtTime(r.EventSaleStartDate))}）</span></a>`).join("")}</section>` : ""}
     ${reminders.length ? `<section style="margin-bottom: 18px">${reminders.map((r) => `
       <a class="reminder" href="#/event/${r.EventID}">⏰ <span><b>${r.DaysLeft === 0 ? "今天" : `${r.DaysLeft} 天後`}截止</b>：
         ${esc(r.EventTitle)} 的${esc(r.DiscountTypeName)}（${money(r.DiscountPrice)}）</span></a>`).join("")}</section>` : ""}
@@ -475,6 +519,7 @@ async function viewSaves() {
           ${s.EventStatus === "上架中" ? `<a href="#/event/${s.EventID}">${esc(s.EventTitle)}</a>`
             : `<span class="save-title">${esc(s.EventTitle)}</span> ${statusTag(s.EventStatus)}`}
           <div class="muted small">${esc(s.CategoryName)}・${fmtRange(s.EventStartDate, s.EventEndDate)}・${esc(s.CityName)}・收藏於 ${fmtDay(s.SaveDate)}</div>
+          ${notOnSale(s.EventSaleStartDate) ? `<div class="small">${saleTag(s.EventSaleStartDate)}</div>` : ""}
         </div>
         <button class="btn" data-unsave="${s.EventID}">取消收藏</button>
       </div>`).join("") : '<div class="empty">還沒有收藏。看到喜歡的活動，在活動頁按「收藏活動」。<br><br><a class="btn btn-primary" href="#/search">去找活動</a></div>'}
@@ -668,8 +713,9 @@ async function viewMerchant() {
           <a href="#/event/${e.EventID}">${esc(e.EventTitle)}</a> ${statusTag(e.EventStatus)}
           <div class="muted small">${[esc(e.CategoryName), fmtRange(e.EventStartDate, e.EventEndDate), `${esc(e.CityName)} ${esc(e.VenueName)}`,
             e.EventOriginalPrice === null ? "票價未公布" : e.EventOriginalPrice === 0 ? "免費" : money(e.EventOriginalPrice),
-            `優惠 ${e.DiscountCount} 筆`, `${e.SaveCount} 人收藏`].join("・")}</div>
-          ${e.EventStatus === "已退回" ? '<div class="small" style="color: var(--deal)">被管理員退回：請修改資料後重新送出審核。</div>' : ""}
+            `優惠 ${e.DiscountCount} 筆`, `${e.SaveCount} 人收藏`].join("・")} ${saleTag(e.EventSaleStartDate)}</div>
+          ${e.EventStatus === "已退回" ? `<div class="reject-note"><b>被管理員退回</b>：${esc(e.EventRejectReason || "未註明理由")}
+            <div class="small">請依理由修改資料後重新送出審核。</div></div>` : ""}
         </div>
         <div class="row-actions">${e.EventStatus === "已下架" ? "" : `<a class="btn" href="#/merchant/edit/${e.EventID}">修改</a>`}</div>
       </div>`).join("") : `<div class="empty">${events.length ? "這個狀態沒有活動。" : "還沒有上架活動。按右上角「上架新活動」開始。"}</div>`}
@@ -701,6 +747,7 @@ async function viewEventForm(id) {
     <a class="back btn-text" href="#/merchant">← 回商家後台</a>
     <h1>${e ? "修改活動" : "上架新活動"}</h1>
     <p class="muted">${e ? `目前狀態：${statusTag(e.EventStatus)}。` : ""}送出後會變成「待審核」，管理員通過後才會出現在搜尋結果。</p>
+    ${e?.EventStatus === "已退回" ? `<div class="reject-note"><b>退回理由</b>：${esc(e.EventRejectReason || "未註明理由")}</div>` : ""}
     <form class="card panel form" id="event-form">
       <label class="field"><span>活動名稱</span><input class="input" name="title" required maxlength="100" value="${esc(e?.EventTitle ?? "")}"></label>
       <div class="form-grid">
@@ -711,6 +758,7 @@ async function viewEventForm(id) {
         <label class="field"><span>結束日期</span><input class="input" type="date" name="end_date" required value="${isoDay(e?.EventEndDate)}"></label>
         <label class="field"><span>全票價格（免費填 0，未公布留空）</span><input class="input" type="number" min="0" name="price" value="${e?.EventOriginalPrice ?? ""}"></label>
         <label class="field"><span>活動網址</span><input class="input" type="url" name="url" maxlength="255" placeholder="https://" value="${esc(e?.EventURL ?? "")}"></label>
+        <label class="field"><span>開賣時間（選填，熱門場次請一定要填）</span><input class="input" type="datetime-local" name="sale_start" value="${e?.EventSaleStartDate ? e.EventSaleStartDate.slice(0, 16) : ""}"></label>
       </div>
       <details class="venue-new" id="venue-new">
         <summary>找不到場館？新增場館</summary>
@@ -756,7 +804,7 @@ async function viewEventForm(id) {
     const body = {
       title: f.title, category_id: Number(f.category_id), venue_id: Number(f.venue_id),
       start_date: f.start_date, end_date: f.end_date, price: f.price === "" ? null : Number(f.price),
-      url: f.url || null, description: f.description || null,
+      url: f.url || null, description: f.description || null, sale_start: f.sale_start || null,
       discounts: [...box.querySelectorAll("[data-discount]")].map((row) => {
         const v = (name) => row.querySelector(`[name=${name}]`).value;
         return { discount_type_id: Number(v("d_type")), price: Number(v("d_price")), description: v("d_desc") || null,
@@ -783,7 +831,7 @@ async function viewEventForm(id) {
 const admin = { status: "待審核", keyword: "", items: [], total: 0, page: 1 };
 // 每個狀態可以做的操作：[新狀態, 按鈕文字, 是否要再按一次確認]
 const ADMIN_ACTIONS = {
-  "待審核": [["上架中", "通過並上架", false], ["已退回", "退回", true]],
+  "待審核": [["上架中", "通過並上架", false], ["已退回", "退回…", false]],
   "上架中": [["已下架", "違規下架", true]],
   "已下架": [["上架中", "重新上架", false]],
   "已退回": [],
@@ -845,7 +893,8 @@ function adminRow(e) {
     <div style="min-width: 0">
       <a href="#/event/${e.EventID}">${esc(e.EventTitle)}</a> ${statusTag(e.EventStatus)}
       <div class="muted small">${esc(e.CategoryName)}・${fmtRange(e.EventStartDate, e.EventEndDate)}${ended ? "（已結束）" : ""}・${esc(e.CityName)} ${esc(e.VenueName)}</div>
-      <div class="muted small">上架：${esc(e.OrganizerName)}（${esc(e.OrganizerRole)}）・來源：${esc(e.EventDataSource)}</div>
+      <div class="muted small">上架：${esc(e.OrganizerName)}（${esc(e.OrganizerRole)}）・來源：${esc(e.EventDataSource)} ${saleTag(e.EventSaleStartDate)}</div>
+      ${e.EventStatus === "已退回" && e.EventRejectReason ? `<div class="reject-note small">退回理由：${esc(e.EventRejectReason)}</div>` : ""}
     </div>
     <div class="row-actions">${actions.map(([to, label, confirm]) =>
       `<button class="btn ${to === "上架中" ? "btn-primary" : ""}" data-to="${to}" data-id="${e.EventID}" data-label="${label}" ${confirm ? "data-confirm" : ""}>${label}</button>`).join("")}
@@ -864,15 +913,59 @@ async function adminAction(ev) {
     setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; btn.classList.remove("btn-danger"); } }, 4000);
     return;
   }
+  // 退回：跳出彈窗選理由，按「確定退回」才送出
+  let reason = null;
+  if (btn.dataset.to === "已退回") {
+    reason = await askRejectReason(btn.closest("[data-row]").querySelector("a").textContent);
+    if (!reason) return;
+  }
   btn.disabled = true;
   try {
-    const r = await api(`/api/admin/events/${btn.dataset.id}/status`, { method: "POST", body: JSON.stringify({ status: btn.dataset.to }) });
+    const r = await api(`/api/admin/events/${btn.dataset.id}/status`, { method: "POST", body: JSON.stringify({ status: btn.dataset.to, reason }) });
     toast(`已${r.action}`);
     adminReview();
   } catch (err) {
     toast(err.message);
     btn.disabled = false;
   }
+}
+
+// 退回理由彈窗：勾選一個以上的常見理由，可以再寫補充說明。回傳理由文字；按取消回傳 null
+async function askRejectReason(title) {
+  const opts = await getOptions();
+  const dialog = document.createElement("dialog");
+  dialog.className = "card dialog";
+  dialog.setAttribute("aria-labelledby", "reject-title");
+  dialog.innerHTML = `
+    <form method="dialog" class="form" id="reject-form">
+      <h2 id="reject-title">退回活動</h2>
+      <p class="muted small">「${esc(title)}」會改成「已退回」，商家在後台會看到你選的理由，修改後可以重新送審。</p>
+      <fieldset class="reasons"><legend class="chip-label">退回理由（可複選）</legend>
+        ${opts.reject_reasons.map((r) => `<label class="reason"><input type="checkbox" name="reason" value="${esc(r)}"><span>${esc(r)}</span></label>`).join("")}
+      </fieldset>
+      <label class="field"><span>補充說明（選填，例如要修改哪裡）</span><textarea class="input" name="note" rows="3" maxlength="120"></textarea></label>
+      <p class="error" id="reject-error" role="alert"></p>
+      <div class="filter-actions">
+        <button type="button" class="btn-text" value="cancel" id="reject-cancel">取消</button>
+        <button class="btn btn-danger" value="ok">確定退回</button>
+      </div>
+    </form>`;
+  document.body.append(dialog);
+  return new Promise((resolve) => {
+    const form = dialog.querySelector("form");
+    const close = (value) => { dialog.close(); dialog.remove(); resolve(value); };
+    dialog.querySelector("#reject-cancel").addEventListener("click", () => close(null));
+    dialog.addEventListener("cancel", (ev) => { ev.preventDefault(); close(null); }); // 按 Esc
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const picked = [...form.querySelectorAll('[name="reason"]:checked')].map((i) => i.value);
+      const note = form.elements.note.value.trim();
+      if (!picked.length && !note) { dialog.querySelector("#reject-error").textContent = "請至少勾選一個理由，或寫下補充說明"; return; }
+      close([picked.join("；"), note && `補充：${note}`].filter(Boolean).join("；").slice(0, 255));
+    });
+    dialog.showModal();
+    dialog.querySelector('[name="reason"]').focus();
+  });
 }
 
 async function adminStats() {
