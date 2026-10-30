@@ -182,6 +182,10 @@ async function viewSearch() {
           <div class="chip-label">地區</div>
           <div class="chips">${chip("region", "", "全部")}${opts.regions.map((r) => chip("region", r, r)).join("")}</div>
         </div>
+        <div>
+          <div class="chip-label">活動狀態</div>
+          <div class="chips">${PHASES.map(([value, text]) => chip("phase", value, text)).join("")}</div>
+        </div>
       </div>
       <div class="filter-row dates">
         <label class="field"><span>從</span><input class="input" type="date" name="date_from"></label>
@@ -199,10 +203,6 @@ async function viewSearch() {
           ${opts.discount_types.map((t) => chip("discount_type_id", t.DiscountTypeID, t.DiscountTypeName, "checkbox")).join("")}
           ${chip("free_only", "true", "只看免費", "checkbox")}
         </div>
-      </div>
-      <div>
-        <div class="chip-label">售票</div>
-        <div class="chips">${chip("not_on_sale", "true", "🎫 還沒開賣（可以先收藏，開賣前提醒你）", "checkbox")}</div>
       </div>
       <div class="filter-actions">
         <button type="reset" class="btn-text">清除條件</button>
@@ -236,7 +236,7 @@ async function viewSearch() {
       form.querySelectorAll(`[name="${key}"]`).forEach((i) => { if (i.value === value) i.checked = true; });
     } else el.value = value;
   }
-  const checkAll = () => ["region"].forEach((name) => {
+  const checkAll = () => ["region", "phase"].forEach((name) => {
     if (!form.querySelector(`[name="${name}"]:checked`)) form.querySelector(`[name="${name}"][value=""]`).checked = true;
   });
   checkAll();
@@ -244,7 +244,7 @@ async function viewSearch() {
 
   form.addEventListener("submit", (e) => { e.preventDefault(); runSearch(form); });
   form.addEventListener("reset", () => setTimeout(() => { checkAll(); runSearch(form, false); }));
-  form.querySelectorAll('[name="region"], [name="discount_type_id"], [name="free_only"], [name="not_on_sale"], select').forEach((el) =>
+  form.querySelectorAll('[name="region"], [name="phase"], [name="discount_type_id"], [name="free_only"], select').forEach((el) =>
     el.addEventListener("change", () => runSearch(form)));
   document.getElementById("sort").addEventListener("change", () => runSearch(form));
   form.querySelectorAll("[data-quick]").forEach((b) => b.addEventListener("click", () => {
@@ -275,6 +275,9 @@ function placeHighlights() {
   else target.insertBefore(box, document.querySelector(".results-head"));
   box.classList.toggle("below", !!search.userSearched);
 }
+
+// 活動狀態（單選）：即將開始／開賣 = 還沒開始，或還沒開賣；早鳥即將截止 = 14 天內截止，和下方區塊相同
+const PHASES = [["", "全部"], ["ongoing", "進行中"], ["upcoming", "即將開始／開賣"], ["early_bird", "早鳥即將截止"]];
 
 // 找活動的類型下拉選單：每組最上面是「整組」（例如全部學習類），下面是該組的各類別
 function categoryFilterOptions(opts) {

@@ -115,7 +115,9 @@
     const region = q.get("region"), cityId = num(q.get("city_id")), from = q.get("date_from"), to = q.get("date_to");
     const categoryId = num(q.get("category_id")), group = q.get("category_group"), keyword = q.get("keyword");
     const discountTypes = q.getAll("discount_type_id").map(Number), freeOnly = q.get("free_only") === "true";
-    const onlyNotOnSale = q.get("not_on_sale") === "true";
+    const phase = q.get("phase");
+    if (phase && !["ongoing", "upcoming", "early_bird"].includes(phase)) throw httpError(422, "活動狀態不正確");
+    const earlyBirdSoon = new Set(endingSoon(14, true).map((d) => d.EventID));
     const sort = q.get("sort") || "date";
     if (region && !REGIONS.includes(region)) throw httpError(400, "地區只能是 北部、中部、南部、東部、離島");
     if (group && !CATEGORY_GROUPS.includes(group)) throw httpError(400, "類別分組只能是 學習類、休閒類");
@@ -131,7 +133,9 @@
       && (!discountTypes.length || (discountsOf.get(e.EventID) ?? []).some((d) => discountTypes.includes(d.DiscountType_FK) && validNow(d)))
       && (!keyword || e.EventTitle.includes(keyword) || v.VenueName.includes(keyword))
       && (!freeOnly || e.EventOriginalPrice === 0)
-      && (!onlyNotOnSale || notOnSale(e)));
+      && (phase !== "ongoing" || day(e.EventStartDate) <= today())
+      && (phase !== "upcoming" || day(e.EventStartDate) > today() || notOnSale(e))
+      && (phase !== "early_bird" || earlyBirdSoon.has(e.EventID)));
 
     const t = today();
     const key = {
@@ -213,7 +217,7 @@
   function endingSoon(days, onlyEarlyBird, eventIds = null) {
     const t = today(), last = addDays(t, days), ev = byId("EventTable", "EventID"), tt = types();
     return db.DiscountTable.filter((d) => (!onlyEarlyBird || d.DiscountType_FK === EARLY_BIRD) && d.DiscountEndDate
-        && day(d.DiscountEndDate) >= t && day(d.DiscountEndDate) <= last
+        && d.DiscountEndDate >= dayStart(t) && d.DiscountEndDate <= dayStart(last)  // 同 Access 的 BETWEEN Date() AND DateAdd(...)：最後一天只算到 0 點
         && ev.get(d.DiscountEvent_FK)?.EventStatus === LISTED && (!eventIds || eventIds.has(d.DiscountEvent_FK)))
       .sort((a, b) => compare([a.DiscountEndDate, a.DiscountEvent_FK], [b.DiscountEndDate, b.DiscountEvent_FK]))
       .map((d) => {
