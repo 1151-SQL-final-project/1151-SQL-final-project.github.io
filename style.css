@@ -278,3 +278,12 @@ textarea.input { resize: vertical; font: inherit; }
   border-radius: 10px; cursor: pointer; }
 .reason:has(input:checked) { border-color: var(--danger); background: var(--deal-soft); }
 .reason input { margin-top: 4px; accent-color: var(--danger); }
+
+/* 審核時的重複提醒 */
+.dup-warn { margin-top: 8px; padding: 10px 14px; border-radius: 10px; background: var(--warn-soft); color: var(--text); }
+.dup-warn > b { color: var(--warn); }
+.dup-warn.likely { background: var(--deal-soft); }
+.dup-warn.likely > b { color: var(--deal); }
+.dup-warn ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.dup-warn li { min-width: 0; }
+.dup-warn .tag { background: var(--surface); }

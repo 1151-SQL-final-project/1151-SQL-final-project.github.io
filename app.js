@@ -886,15 +886,29 @@ async function adminReview(page = 1) {
   document.getElementById("admin-list").addEventListener("click", adminAction);
 }
 
+// 審核時的重複提醒：日期重疊、名稱相似（加上同場館或同縣市）的其他已上架或待審核活動（規則見 api/similar.py）
+function similarBox(list) {
+  const likely = list.some((s) => s.Level === "很可能重複");
+  return `<div class="dup-warn ${likely ? "likely" : ""}" role="note">
+    <b>⚠ 偵測到 ${list.length} 場${likely ? "很可能重複" : "相似"}的活動</b>，通過前請確認是不是重複上架：
+    <ul>${list.map((s) => `<li>
+      <span class="tag ${s.Level === "很可能重複" ? "tag-deal" : "tag-warn"}">${esc(s.Level)}</span>
+      <a href="#/event/${s.EventID}">${esc(s.EventTitle)}</a> ${statusTag(s.EventStatus)}
+      <div class="muted small">${fmtRange(s.EventStartDate, s.EventEndDate)}・${esc(s.CityName)} ${esc(s.VenueName)}・上架：${esc(s.OrganizerName)}
+        ・${s.Reasons.map(esc).join("、")}</div></li>`).join("")}</ul></div>`;
+}
+
 function adminRow(e) {
   const ended = toDate(e.EventEndDate) < new Date(new Date().toDateString());
-  const actions = (ADMIN_ACTIONS[e.EventStatus] ?? []).filter(([to]) => !(to === "上架中" && ended));
+  const actions = (ADMIN_ACTIONS[e.EventStatus] ?? []).filter(([to]) => !(to === "上架中" && ended))
+    .map(([to, label, confirm]) => [to, label, confirm || (to === "上架中" && !!e.Similar?.length)]);
   return `<div class="admin-row" data-row="${e.EventID}">
     <div style="min-width: 0">
       <a href="#/event/${e.EventID}">${esc(e.EventTitle)}</a> ${statusTag(e.EventStatus)}
       <div class="muted small">${esc(e.CategoryName)}・${fmtRange(e.EventStartDate, e.EventEndDate)}${ended ? "（已結束）" : ""}・${esc(e.CityName)} ${esc(e.VenueName)}</div>
       <div class="muted small">上架：${esc(e.OrganizerName)}（${esc(e.OrganizerRole)}）・來源：${esc(e.EventDataSource)} ${saleTag(e.EventSaleStartDate)}</div>
       ${e.EventStatus === "已退回" && e.EventRejectReason ? `<div class="reject-note small">退回理由：${esc(e.EventRejectReason)}</div>` : ""}
+      ${e.Similar?.length ? similarBox(e.Similar) : ""}
     </div>
     <div class="row-actions">${actions.map(([to, label, confirm]) =>
       `<button class="btn ${to === "上架中" ? "btn-primary" : ""}" data-to="${to}" data-id="${e.EventID}" data-label="${label}" ${confirm ? "data-confirm" : ""}>${label}</button>`).join("")}
@@ -916,7 +930,10 @@ async function adminAction(ev) {
   // 退回：跳出彈窗選理由，按「確定退回」才送出
   let reason = null;
   if (btn.dataset.to === "已退回") {
-    reason = await askRejectReason(btn.closest("[data-row]").querySelector("a").textContent);
+    const item = admin.items.find((i) => String(i.EventID) === btn.dataset.id);
+    const dup = item?.Similar?.[0];
+    reason = await askRejectReason(btn.closest("[data-row]").querySelector("a").textContent,
+      dup ? { reasons: ["重複上架"], note: `和「${dup.EventTitle}」（編號 ${dup.EventID}）重複` } : {});
     if (!reason) return;
   }
   btn.disabled = true;
@@ -931,7 +948,7 @@ async function adminAction(ev) {
 }
 
 // 退回理由彈窗：勾選一個以上的常見理由，可以再寫補充說明。回傳理由文字；按取消回傳 null
-async function askRejectReason(title) {
+async function askRejectReason(title, preset = {}) {
   const opts = await getOptions();
   const dialog = document.createElement("dialog");
   dialog.className = "card dialog";
@@ -941,9 +958,9 @@ async function askRejectReason(title) {
       <h2 id="reject-title">退回活動</h2>
       <p class="muted small">「${esc(title)}」會改成「已退回」，商家在後台會看到你選的理由，修改後可以重新送審。</p>
       <fieldset class="reasons"><legend class="chip-label">退回理由（可複選）</legend>
-        ${opts.reject_reasons.map((r) => `<label class="reason"><input type="checkbox" name="reason" value="${esc(r)}"><span>${esc(r)}</span></label>`).join("")}
+        ${opts.reject_reasons.map((r) => `<label class="reason"><input type="checkbox" name="reason" value="${esc(r)}" ${preset.reasons?.includes(r) ? "checked" : ""}><span>${esc(r)}</span></label>`).join("")}
       </fieldset>
-      <label class="field"><span>補充說明（選填，例如要修改哪裡）</span><textarea class="input" name="note" rows="3" maxlength="120"></textarea></label>
+      <label class="field"><span>補充說明（選填，例如要修改哪裡）</span><textarea class="input" name="note" rows="3" maxlength="120">${esc(preset.note ?? "")}</textarea></label>
       <p class="error" id="reject-error" role="alert"></p>
       <div class="filter-actions">
         <button type="button" class="btn-text" value="cancel" id="reject-cancel">取消</button>

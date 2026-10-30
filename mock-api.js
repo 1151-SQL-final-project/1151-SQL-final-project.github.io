@@ -267,6 +267,45 @@
              SaveCount: db.SaveTable.filter((s) => s.SaveEvent_FK === e.EventID).length };
   }
 
+  // 重複提醒：admin/similar_events.sql 撈候選活動＋api/similar.py 的比對規則（兩邊要一致）
+  const normalize = (s) => (s || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  function titleSimilarity(a, b) {
+    a = normalize(a); b = normalize(b);
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    if (Math.min(a.length, b.length) >= 4 && (a.includes(b) || b.includes(a))) return 0.9;
+    const pairs = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) m.set(s.slice(i, i + 2), (m.get(s.slice(i, i + 2)) ?? 0) + 1); if (!m.size) m.set(s, 1); return m; };
+    const pa = pairs(a), pb = pairs(b);
+    let common = 0, total = 0;
+    for (const [k, n] of pa) { common += Math.min(n, pb.get(k) ?? 0); total += n; }
+    for (const n of pb.values()) total += n;
+    return (2 * common) / total;
+  }
+  const SIMILAR_RULES = [["很可能重複", 0.8, "venue"], ["可能重複", 0.6, "venue"], ["可能重複", 0.7, "city"], ["可能重複", 0.9, "any"]];
+  function findSimilar(id) {
+    const ev = db.EventTable.find((x) => x.EventID === id);
+    if (!ev) throw httpError(404, "找不到這個活動");
+    const target = joined(ev), u = users();
+    return db.EventTable.filter((e) => e.EventID !== id && [LISTED, PENDING].includes(e.EventStatus) && notEnded(e)
+        && day(e.EventStartDate) <= day(ev.EventEndDate) && day(e.EventEndDate) >= day(ev.EventStartDate))
+      .map((other) => {
+        const o = joined(other), score = titleSimilarity(ev.EventTitle, other.EventTitle);
+        const sameVenue = ev.EventVenue_FK === other.EventVenue_FK, sameCity = target.ci.CityID === o.ci.CityID;
+        const ok = { venue: sameVenue, city: sameCity, any: true };
+        const rule = SIMILAR_RULES.find(([, threshold, place]) => score >= threshold && ok[place]);
+        if (!rule) return null;
+        const reasons = [`名稱相似度 ${Math.round(score * 100)}%`, sameVenue ? "同一個場館" : sameCity ? "同縣市" : `不同縣市（${o.ci.CityName}）`, "日期重疊"];
+        if (ev.EventURL && ev.EventURL === other.EventURL) reasons.push("活動網址相同");
+        return { EventID: other.EventID, EventTitle: other.EventTitle, EventStatus: other.EventStatus,
+                 EventStartDate: other.EventStartDate, EventEndDate: other.EventEndDate, VenueName: o.v.VenueName,
+                 CityName: o.ci.CityName, OrganizerName: u.get(other.EventOrganizer_FK)?.UserName,
+                 Level: rule[0], Score: Math.round(score * 100) / 100, Reasons: reasons };
+      })
+      .filter(Boolean)
+      .sort((a, b) => compare([a.Level !== "很可能重複", -a.Score, a.EventID], [b.Level !== "很可能重複", -b.Score, b.EventID]))
+      .slice(0, 5);
+  }
+
   // admin/stats_events_by_status.sql
   const statsByStatus = () => STATUSES.map((s) => ({ EventStatus: s, EventCount: db.EventTable.filter((e) => e.EventStatus === s).length }))
     .filter((r) => r.EventCount).sort((a, b) => b.EventCount - a.EventCount);
@@ -414,9 +453,11 @@
         .sort((a, b) => (status === PENDING ? a.EventID - b.EventID : b.EventID - a.EventID));
       const page = Math.max(1, num(q.get("page")) ?? 1), size = Math.min(200, num(q.get("page_size")) ?? 30);
       const counts = Object.fromEntries(STATUSES.map((s) => [s, db.EventTable.filter((e) => e.EventStatus === s).length]));
-      return { total: rows.length, page, page_size: size, auto_offlined: offlined, counts,
-               items: rows.slice((page - 1) * size, page * size).map(eventRow) };
+      const items = rows.slice((page - 1) * size, page * size).map(eventRow);
+      for (const item of items) if (item.EventStatus === PENDING) item.Similar = findSimilar(item.EventID);
+      return { total: rows.length, page, page_size: size, auto_offlined: offlined, counts, items };
     }],
+    ["GET", /^\/api\/admin\/events\/(\d+)\/similar$/, ({ need, id }) => { need(ADMIN); return findSimilar(id); }],
     ["POST", /^\/api\/admin\/events\/(\d+)\/status$/, ({ need, body, id }) => {
       need(ADMIN);
       if (!STATUSES.includes(body.status)) throw httpError(400, "審核狀態不正確");
