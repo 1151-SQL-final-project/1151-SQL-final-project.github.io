@@ -285,8 +285,12 @@
   function findSimilar(id) {
     const ev = db.EventTable.find((x) => x.EventID === id);
     if (!ev) throw httpError(404, "找不到這個活動");
+    return similarTo(ev, id).slice(0, 5);
+  }
+  // ev 只需要 EventTitle、EventVenue_FK、EventStartDate、EventEndDate、EventURL（商家送出前檢查時還沒存進資料庫）
+  function similarTo(ev, excludeId) {
     const target = joined(ev), u = users();
-    return db.EventTable.filter((e) => e.EventID !== id && [LISTED, PENDING].includes(e.EventStatus) && notEnded(e)
+    return db.EventTable.filter((e) => e.EventID !== excludeId && [LISTED, PENDING].includes(e.EventStatus) && notEnded(e)
         && day(e.EventStartDate) <= day(ev.EventEndDate) && day(e.EventEndDate) >= day(ev.EventStartDate))
       .map((other) => {
         const o = joined(other), score = titleSimilarity(ev.EventTitle, other.EventTitle);
@@ -299,11 +303,11 @@
         return { EventID: other.EventID, EventTitle: other.EventTitle, EventStatus: other.EventStatus,
                  EventStartDate: other.EventStartDate, EventEndDate: other.EventEndDate, VenueName: o.v.VenueName,
                  CityName: o.ci.CityName, OrganizerName: u.get(other.EventOrganizer_FK)?.UserName,
+                 EventOrganizer_FK: other.EventOrganizer_FK,
                  Level: rule[0], Score: Math.round(score * 100) / 100, Reasons: reasons };
       })
       .filter(Boolean)
-      .sort((a, b) => compare([a.Level !== "很可能重複", -a.Score, a.EventID], [b.Level !== "很可能重複", -b.Score, b.EventID]))
-      .slice(0, 5);
+      .sort((a, b) => compare([a.Level !== "很可能重複", -a.Score, a.EventID], [b.Level !== "很可能重複", -b.Score, b.EventID]));
   }
 
   // admin/stats_events_by_status.sql
@@ -439,6 +443,15 @@
       const user = need(MERCHANT);
       autoOffline();
       return db.EventTable.filter((e) => e.EventOrganizer_FK === user.UserID).sort((a, b) => b.EventID - a.EventID).map(eventRow);
+    }],
+    // 商家送出前檢查：只回傳已上架的活動和自己的活動
+    ["POST", /^\/api\/merchant\/events\/similar$/, ({ need, body }) => {
+      const user = need(MERCHANT);
+      if (!venues().has(body.venue_id)) throw httpError(400, "找不到這個場館");
+      const ev = { EventTitle: body.title, EventVenue_FK: body.venue_id, EventStartDate: dayStart(body.start_date),
+                   EventEndDate: dayStart(body.end_date), EventURL: body.url?.trim() || null };
+      return similarTo(ev, body.event_id ?? 0)
+        .filter((s) => s.EventStatus === LISTED || s.EventOrganizer_FK === user.UserID).slice(0, 5);
     }],
     ["POST", /^\/api\/merchant\/events$/, ({ need, body }) => [201, saveEvent(body, need(MERCHANT))]],
     ["PUT", /^\/api\/merchant\/events\/(\d+)$/, ({ need, body, id }) => saveEvent(body, need(MERCHANT), id)],

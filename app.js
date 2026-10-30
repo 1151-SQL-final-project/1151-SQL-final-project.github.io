@@ -776,6 +776,7 @@ async function viewEventForm(id) {
         <div id="discounts">${(e?.Discounts ?? []).map((d) => discountRow(opts, d)).join("")}</div>
         <button type="button" class="btn" id="add-discount">＋ 新增一筆優惠</button>
       </div>
+      <div id="similar-warn" hidden></div>
       <p class="error" id="form-error" role="alert"></p>
       <div class="filter-actions"><a class="btn-text" href="#/merchant">取消</a>
         <button class="btn btn-primary">${e ? "儲存並重新送審" : "送出審核"}</button></div>
@@ -814,6 +815,14 @@ async function viewEventForm(id) {
     const button = form.querySelector("button.btn-primary");
     button.disabled = true;
     try {
+      // 送出前先檢查有沒有相似的活動（避免重複上架）；看過提醒、按「仍要送出審核」就不再擋
+      const key = JSON.stringify([body.title, body.venue_id, body.start_date, body.end_date]);
+      if (form.dataset.similarChecked !== key) {
+        const similar = await api("/api/merchant/events/similar", { method: "POST", body: JSON.stringify({
+          title: body.title, venue_id: body.venue_id, start_date: body.start_date, end_date: body.end_date,
+          url: body.url, event_id: id ? Number(id) : null }) }).catch(() => []);
+        if (similar.length) { showSimilarWarning(form, similar, key); return; }
+      }
       await api(id ? `/api/merchant/events/${id}` : "/api/merchant/events", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
       toast(id ? "已儲存，等待管理員重新審核" : "已送出，等待管理員審核");
       merchant.status = "待審核";
@@ -823,6 +832,27 @@ async function viewEventForm(id) {
     } finally {
       button.disabled = false;
     }
+  });
+}
+
+// 商家送出前的重複提醒：只列已上架的活動和自己的活動
+function showSimilarWarning(form, list, key) {
+  const box = document.getElementById("similar-warn");
+  const likely = list.some((s) => s.Level === "很可能重複");
+  box.innerHTML = `<div class="dup-warn ${likely ? "likely" : ""}" role="alert">
+    <b>⚠ 系統裡已經有 ${list.length} 場${likely ? "很可能重複" : "相似"}的活動</b>，請確認不是重複上架（重複的活動會被管理員退回）：
+    ${similarList(list)}
+    <div class="filter-actions">
+      <button type="button" class="btn-text" id="similar-back">回去修改</button>
+      <button type="button" class="btn" id="similar-go">不是重複，仍要送出審核</button>
+    </div></div>`;
+  box.hidden = false;
+  box.scrollIntoView({ block: "center", behavior: "smooth" });
+  document.getElementById("similar-back").addEventListener("click", () => { box.hidden = true; form.elements.title.focus(); });
+  document.getElementById("similar-go").addEventListener("click", () => {
+    form.dataset.similarChecked = key;
+    box.hidden = true;
+    form.requestSubmit();
   });
 }
 
@@ -891,11 +921,15 @@ function similarBox(list) {
   const likely = list.some((s) => s.Level === "很可能重複");
   return `<div class="dup-warn ${likely ? "likely" : ""}" role="note">
     <b>⚠ 偵測到 ${list.length} 場${likely ? "很可能重複" : "相似"}的活動</b>，通過前請確認是不是重複上架：
-    <ul>${list.map((s) => `<li>
+    ${similarList(list)}</div>`;
+}
+
+function similarList(list) {
+  return `<ul>${list.map((s) => `<li>
       <span class="tag ${s.Level === "很可能重複" ? "tag-deal" : "tag-warn"}">${esc(s.Level)}</span>
       <a href="#/event/${s.EventID}">${esc(s.EventTitle)}</a> ${statusTag(s.EventStatus)}
       <div class="muted small">${fmtRange(s.EventStartDate, s.EventEndDate)}・${esc(s.CityName)} ${esc(s.VenueName)}・上架：${esc(s.OrganizerName)}
-        ・${s.Reasons.map(esc).join("、")}</div></li>`).join("")}</ul></div>`;
+        ・${s.Reasons.map(esc).join("、")}</div></li>`).join("")}</ul>`;
 }
 
 function adminRow(e) {
